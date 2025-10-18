@@ -6,26 +6,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#ffffff; }
-    /* Prevent the browser from handling touch gestures so ours work consistently */
     canvas { display:block; width:100%; height:100%; background:#f7f7f7; touch-action:none; }
   </style>
 </head>
 <body>
   <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
   <script>
-    // ----- Renderer -----
+    // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(0xf7f7f7, 1);
     renderer.outputEncoding = THREE.sRGBEncoding;
     document.body.appendChild(renderer.domElement);
 
-    // ----- Scene & Camera -----
+    // Scene & Camera
     const scene  = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
 
+    // Spherical camera controls
     let radius = 8, theta = 0, phi = Math.PI / 2;
-    const R_MIN = 4, R_MAX = 20, PHI_MIN = 0.1, PHI_MAX = Math.PI - 0.1;
+
+    // Dynamic limits (R_MIN will be set from fit)
+    let R_MIN = 4, R_MAX = 40;
+    const PHI_MIN = 0.1, PHI_MAX = Math.PI - 0.1;
 
     function updateCamera() {
       const sinPhi = Math.sin(phi);
@@ -37,7 +40,7 @@
       camera.lookAt(0, 0, 0);
     }
 
-    // ----- Lights -----
+    // Lights
     const hemi = new THREE.HemisphereLight(0xffffff, 0xebe7e2, 0.6);
     scene.add(hemi);
     const key = new THREE.DirectionalLight(0xfff2e0, 0.9);
@@ -47,17 +50,17 @@
     fill.position.set(-6, 2, -5);
     scene.add(fill);
 
-    // ----- Card geometry -----
+    // Card geometry (credit card size in inches)
     const size = { w: 3.37, h: 2.125, d: 0.04 };
     const geometry = new THREE.BoxGeometry(size.w, size.h, size.d);
 
-    // ----- Materials -----
+    // Materials
     const offWhite  = 0xfcfbf7;
     const edgeColor = 0xdadada;
     const edgeMat = new THREE.MeshStandardMaterial({ color: edgeColor, roughness: 0.35, metalness: 0.02 });
     const faceMat = new THREE.MeshStandardMaterial({ color: offWhite, roughness: 0.6, metalness: 0.0 });
 
-    // ----- Face texture (monospace, left-aligned) -----
+    // Face texture (left-aligned monospace)
     function makeFaceTexture() {
       const W = 1024, H = 512;
       const canvas = document.createElement("canvas");
@@ -92,96 +95,110 @@
     const card = new THREE.Mesh(geometry, [edgeMat, edgeMat, edgeMat, edgeMat, frontMat, backMat]);
     scene.add(card);
 
-    // ----- Resize -----
+    // --- Fit-to-view with padding (prevents edge-to-edge on mobile) ---
+    // Returns radius so object occupies ~FILL of the viewport
+    function fitRadiusForSize(objW, objH, fovDeg, aspect, FILL = 0.8) {
+      const vFov = fovDeg * Math.PI / 180;
+      const vDist = (objH / 2) / Math.tan(vFov / 2);
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+      const hDist = (objW / 2) / Math.tan(hFov / 2);
+      const dist = Math.max(vDist, hDist);
+      return dist / FILL;
+    }
+
+    let fitMinRadius = 8;
+
     function resize() {
       const w = window.innerWidth, h = window.innerHeight;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+
+      // Compute minimum comfortable radius with ~20% padding
+      fitMinRadius = fitRadiusForSize(size.w, size.h, camera.fov, camera.aspect, 0.8);
+
+      // Keep user zoom if already farther; otherwise ensure not too close
+      if (radius < fitMinRadius) radius = fitMinRadius;
+
+      // Update zoom limits around fit value
+      R_MIN = fitMinRadius * 0.5; // allow closer than fit if user zooms
+      R_MAX = fitMinRadius * 5.0; // plenty of room to zoom out
+
       updateCamera();
     }
     window.addEventListener("resize", resize);
     resize();
 
-    // ===== Pointer Events controls (mouse + touch + pen) =====
+    // Controls (Pointer Events: mouse/touch/pen)
     const el = renderer.domElement;
-    const ROTATE_SPEED = 0.005;       // drag sensitivity
-    const PINCH_ZOOM_SPEED = 0.003;   // pinch sensitivity
-    const WHEEL_ZOOM_SPEED = 0.0015;  // wheel sensitivity
+    const ROTATE_SPEED = 0.005;
+    const PINCH_ZOOM_SPEED = 0.003;
+    const WHEEL_ZOOM_SPEED = 0.0015;
 
-    // Auto-rotate on open; stop on first interaction (no auto-resume)
     let autoRotate = true;
     let lastTime = performance.now();
 
-    // Track active pointers
-    const pointers = new Map(); // id -> {x,y}
-    let isRotating = false;
+    const pointers = new Map();
     let lastCenter = null;
     let lastPinchDist = null;
+    let isRotating = false;
 
-    function pointerPos(e) { return { x: e.clientX, y: e.clientY }; }
-    function centerOfPointers() {
-      let sx = 0, sy = 0, n = 0;
-      pointers.forEach(p => { sx += p.x; sy += p.y; n++; });
-      return n ? { x: sx / n, y: sy / n } : null;
+    function pos(e){ return {x:e.clientX, y:e.clientY}; }
+    function center() {
+      let sx=0, sy=0, n=0;
+      pointers.forEach(p=>{sx+=p.x; sy+=p.y; n++;});
+      return n ? {x:sx/n, y:sy/n} : null;
     }
-    function distanceAB(a, b) {
-      const dx = a.x - b.x, dy = a.y - b.y;
-      return Math.hypot(dx, dy);
-    }
+    function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+    function stopAuto(){ autoRotate = false; }
 
-    function stopAuto() { autoRotate = false; }
-
-    el.addEventListener("pointerdown", (e) => {
+    el.addEventListener("pointerdown", e => {
       el.setPointerCapture(e.pointerId);
-      pointers.set(e.pointerId, pointerPos(e));
+      pointers.set(e.pointerId, pos(e));
       stopAuto();
 
       if (pointers.size === 1) {
         isRotating = true;
-        lastCenter = centerOfPointers();
+        lastCenter = center();
         lastPinchDist = null;
       } else if (pointers.size === 2) {
         isRotating = false;
         const pts = Array.from(pointers.values());
-        lastPinchDist = distanceAB(pts[0], pts[1]);
-        lastCenter = centerOfPointers();
+        lastPinchDist = dist(pts[0], pts[1]);
+        lastCenter = center();
       }
     });
 
-    el.addEventListener("pointermove", (e) => {
+    el.addEventListener("pointermove", e => {
       if (!pointers.has(e.pointerId)) return;
-      pointers.set(e.pointerId, pointerPos(e));
+      pointers.set(e.pointerId, pos(e));
       const n = pointers.size;
 
       if (n === 1 && isRotating) {
-        const c = centerOfPointers();
+        const c = center();
         if (c && lastCenter) {
           const dx = c.x - lastCenter.x;
           const dy = c.y - lastCenter.y;
-          // Natural "object drag" feel on all devices:
-  	theta -= dx * ROTATE_SPEED;
-	phi   -= dy * ROTATE_SPEED; // ← flipped
-
+          theta -= dx * ROTATE_SPEED;
+          phi   -= dy * ROTATE_SPEED; // drag up -> tilt up
           phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
           updateCamera();
         }
         lastCenter = c;
       } else if (n === 2 && lastPinchDist != null) {
         const pts = Array.from(pointers.values());
-        const d = distanceAB(pts[0], pts[1]);
+        const d = dist(pts[0], pts[1]);
         const delta = d - lastPinchDist;
         radius = Math.max(R_MIN, Math.min(R_MAX, radius * Math.exp(-delta * PINCH_ZOOM_SPEED)));
         updateCamera();
         lastPinchDist = d;
 
-        // Allow rotating while pinching by also tracking center movement
-        const c = centerOfPointers();
+        const c = center();
         if (c && lastCenter) {
           const dx = c.x - lastCenter.x;
           const dy = c.y - lastCenter.y;
-	theta -= dx * ROTATE_SPEED * 0.6;
-	phi   -= dy * ROTATE_SPEED * 0.6; // ← flipped
+          theta -= dx * ROTATE_SPEED * 0.6;
+          phi   -= dy * ROTATE_SPEED * 0.6;
           phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
           updateCamera();
         }
@@ -189,19 +206,19 @@
       }
     });
 
-    el.addEventListener("pointerup", (e) => {
-      if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+    el.addEventListener("pointerup", e => {
+      pointers.delete(e.pointerId);
       if (pointers.size === 0) { isRotating = false; lastCenter = null; lastPinchDist = null; }
-      if (pointers.size === 1) { isRotating = true; lastCenter = centerOfPointers(); }
+      if (pointers.size === 1) { isRotating = true; lastCenter = center(); }
     });
 
-    el.addEventListener("pointercancel", (e) => {
-      if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+    el.addEventListener("pointercancel", e => {
+      pointers.delete(e.pointerId);
       isRotating = false; lastCenter = null; lastPinchDist = null;
     });
 
     // Wheel zoom (desktop)
-    el.addEventListener("wheel", (e) => {
+    el.addEventListener("wheel", e => {
       e.preventDefault();
       stopAuto();
       const factor = Math.exp(e.deltaY * WHEEL_ZOOM_SPEED);
@@ -209,12 +226,11 @@
       updateCamera();
     }, { passive: false });
 
-    // Context menu can get in the way while dragging
-    el.addEventListener("contextmenu", (e) => e.preventDefault());
+    el.addEventListener("contextmenu", e => e.preventDefault());
 
     updateCamera();
 
-    // ----- Render loop -----
+    // Render loop (auto-rotate until interaction)
     function render(now) {
       const delta = now - lastTime;
       lastTime = now;
