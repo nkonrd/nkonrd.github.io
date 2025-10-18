@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { height:100%; margin:0; background:#ffffff; }
+    /* Prevent the browser from handling touch gestures so ours work consistently */
     canvas { display:block; width:100%; height:100%; background:#f7f7f7; touch-action:none; }
   </style>
 </head>
@@ -56,7 +57,7 @@
     const edgeMat = new THREE.MeshStandardMaterial({ color: edgeColor, roughness: 0.35, metalness: 0.02 });
     const faceMat = new THREE.MeshStandardMaterial({ color: offWhite, roughness: 0.6, metalness: 0.0 });
 
-    // ----- Face texture -----
+    // ----- Face texture (monospace, left-aligned) -----
     function makeFaceTexture() {
       const W = 1024, H = 512;
       const canvas = document.createElement("canvas");
@@ -85,9 +86,8 @@
       return tex;
     }
 
-    const frontMat = faceMat.clone();
-    frontMat.map = makeFaceTexture();
-    const backMat = faceMat.clone();
+    const frontMat = faceMat.clone(); frontMat.map = makeFaceTexture();
+    const backMat  = faceMat.clone();
 
     const card = new THREE.Mesh(geometry, [edgeMat, edgeMat, edgeMat, edgeMat, frontMat, backMat]);
     scene.add(card);
@@ -103,77 +103,114 @@
     window.addEventListener("resize", resize);
     resize();
 
-    // ----- Controls (mouse + touch) -----
-    let dragging = false, lastX = 0, lastY = 0;
-    let lastDist = null; // for pinch zoom
-    const ROTATE_SPEED = 0.005, ZOOM_SPEED = 0.0015;
+    // ===== Pointer Events controls (mouse + touch + pen) =====
+    const el = renderer.domElement;
+    const ROTATE_SPEED = 0.005;       // drag sensitivity
+    const PINCH_ZOOM_SPEED = 0.003;   // pinch sensitivity
+    const WHEEL_ZOOM_SPEED = 0.0015;  // wheel sensitivity
 
+    // Auto-rotate on open; stop on first interaction (no auto-resume)
     let autoRotate = true;
     let lastTime = performance.now();
-    let idleTimer = null;
 
-    function stopAutoRotate() {
-      autoRotate = false;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => { autoRotate = true; }, 6000);
+    // Track active pointers
+    const pointers = new Map(); // id -> {x,y}
+    let isRotating = false;
+    let lastCenter = null;
+    let lastPinchDist = null;
+
+    function pointerPos(e) { return { x: e.clientX, y: e.clientY }; }
+    function centerOfPointers() {
+      let sx = 0, sy = 0, n = 0;
+      pointers.forEach(p => { sx += p.x; sy += p.y; n++; });
+      return n ? { x: sx / n, y: sy / n } : null;
+    }
+    function distanceAB(a, b) {
+      const dx = a.x - b.x, dy = a.y - b.y;
+      return Math.hypot(dx, dy);
     }
 
-    // Mouse
-    window.addEventListener("mousedown", e => { dragging = true; lastX = e.clientX; lastY = e.clientY; stopAutoRotate(); });
-    window.addEventListener("mousemove", e => {
-      if (!dragging) return;
-      const dx = e.clientX - lastX, dy = e.clientY - lastY;
-      lastX = e.clientX; lastY = e.clientY;
-      theta += dx * ROTATE_SPEED;
-      phi   -= dy * ROTATE_SPEED;
-      phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
-      updateCamera();
+    function stopAuto() { autoRotate = false; }
+
+    el.addEventListener("pointerdown", (e) => {
+      el.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, pointerPos(e));
+      stopAuto();
+
+      if (pointers.size === 1) {
+        isRotating = true;
+        lastCenter = centerOfPointers();
+        lastPinchDist = null;
+      } else if (pointers.size === 2) {
+        isRotating = false;
+        const pts = Array.from(pointers.values());
+        lastPinchDist = distanceAB(pts[0], pts[1]);
+        lastCenter = centerOfPointers();
+      }
     });
-    window.addEventListener("mouseup", () => dragging = false);
-    window.addEventListener("wheel", e => {
-      e.preventDefault(); stopAutoRotate();
-      const factor = Math.exp(e.deltaY * ZOOM_SPEED);
+
+    el.addEventListener("pointermove", (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, pointerPos(e));
+      const n = pointers.size;
+
+      if (n === 1 && isRotating) {
+        const c = centerOfPointers();
+        if (c && lastCenter) {
+          const dx = c.x - lastCenter.x;
+          const dy = c.y - lastCenter.y;
+          // Natural "object drag" feel on all devices:
+  	theta -= dx * ROTATE_SPEED;
+	phi   -= dy * ROTATE_SPEED; // ← flipped
+
+          phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
+          updateCamera();
+        }
+        lastCenter = c;
+      } else if (n === 2 && lastPinchDist != null) {
+        const pts = Array.from(pointers.values());
+        const d = distanceAB(pts[0], pts[1]);
+        const delta = d - lastPinchDist;
+        radius = Math.max(R_MIN, Math.min(R_MAX, radius * Math.exp(-delta * PINCH_ZOOM_SPEED)));
+        updateCamera();
+        lastPinchDist = d;
+
+        // Allow rotating while pinching by also tracking center movement
+        const c = centerOfPointers();
+        if (c && lastCenter) {
+          const dx = c.x - lastCenter.x;
+          const dy = c.y - lastCenter.y;
+	theta -= dx * ROTATE_SPEED * 0.6;
+	phi   -= dy * ROTATE_SPEED * 0.6; // ← flipped
+          phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
+          updateCamera();
+        }
+        lastCenter = c;
+      }
+    });
+
+    el.addEventListener("pointerup", (e) => {
+      if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+      if (pointers.size === 0) { isRotating = false; lastCenter = null; lastPinchDist = null; }
+      if (pointers.size === 1) { isRotating = true; lastCenter = centerOfPointers(); }
+    });
+
+    el.addEventListener("pointercancel", (e) => {
+      if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+      isRotating = false; lastCenter = null; lastPinchDist = null;
+    });
+
+    // Wheel zoom (desktop)
+    el.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      stopAuto();
+      const factor = Math.exp(e.deltaY * WHEEL_ZOOM_SPEED);
       radius = Math.max(R_MIN, Math.min(R_MAX, radius * factor));
       updateCamera();
     }, { passive: false });
 
-    // Touch support (1 finger = rotate, 2 = pinch zoom)
-    window.addEventListener("touchstart", e => {
-      stopAutoRotate();
-      if (e.touches.length === 1) {
-        dragging = true;
-        lastX = e.touches[0].clientX;
-        lastY = e.touches[0].clientY;
-      } else if (e.touches.length === 2) {
-        dragging = false;
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        lastDist = Math.sqrt(dx*dx + dy*dy);
-      }
-    }, { passive: false });
-
-    window.addEventListener("touchmove", e => {
-      e.preventDefault();
-      if (e.touches.length === 1 && dragging) {
-        const x = e.touches[0].clientX, y = e.touches[0].clientY;
-        const dx = x - lastX, dy = y - lastY;
-        lastX = x; lastY = y;
-        theta += dx * ROTATE_SPEED;
-        phi   -= dy * ROTATE_SPEED;
-        phi = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
-        updateCamera();
-      } else if (e.touches.length === 2 && lastDist) {
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        const factor = Math.exp((lastDist - dist) * ZOOM_SPEED);
-        radius = Math.max(R_MIN, Math.min(R_MAX, radius * factor));
-        updateCamera();
-        lastDist = dist;
-      }
-    }, { passive: false });
-
-    window.addEventListener("touchend", () => { dragging = false; lastDist = null; });
+    // Context menu can get in the way while dragging
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
 
     updateCamera();
 
@@ -183,7 +220,7 @@
       lastTime = now;
 
       if (autoRotate) {
-        theta += -delta * 0.00035;
+        theta += -delta * 0.001;
         updateCamera();
       }
 
