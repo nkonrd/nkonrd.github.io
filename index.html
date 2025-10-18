@@ -104,13 +104,14 @@
       ctx.fillRect(0, 0, W, H);
     
       // text settings
+      const fontFamily = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
       ctx.fillStyle = "#111";
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
       ctx.font = `${60 * scale}px ${fontFamily}`; // higher font size for clarity
     
       const marginX = 100 * scale;
-      const marginY = 220 * scale;
+      const marginY = 180 * scale;
       const lineHeight = 80 * scale;
     
       ctx.fillText("Niko Nordlund, BSc", marginX, marginY);
