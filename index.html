@@ -89,7 +89,45 @@
       return tex;
     }
 
-    const frontMat = faceMat.clone(); frontMat.map = makeFaceTexture();
+    function buildFaceTexture(scale = 2) { // was 1 or adaptive
+      const baseW = 1024, baseH = 512;
+      const W = Math.round(baseW * scale);
+      const H = Math.round(baseH * scale);
+    
+      const canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext("2d");
+    
+      // draw background
+      ctx.fillStyle = "#fcfbf7";
+      ctx.fillRect(0, 0, W, H);
+    
+      // text settings
+      const fontFamily = "'Inter', 'Alliance No.2', sans-serif";
+      ctx.fillStyle = "#111";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.font = `${60 * scale}px ${fontFamily}`; // higher font size for clarity
+    
+      const marginX = 100 * scale;
+      const marginY = 220 * scale;
+      const lineHeight = 80 * scale;
+    
+      ctx.fillText("Niko Nordlund, BSc", marginX, marginY);
+      ctx.fillText("Doctoral researcher", marginX, marginY + lineHeight);
+    
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.encoding = THREE.sRGBEncoding;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = 8;
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    const frontMat = faceMat.clone(); frontMat.map = buildFaceTexture(2);
     const backMat  = faceMat.clone();
 
     const card = new THREE.Mesh(geometry, [edgeMat, edgeMat, edgeMat, edgeMat, frontMat, backMat]);
